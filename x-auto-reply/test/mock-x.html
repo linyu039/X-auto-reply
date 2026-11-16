@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>X 评论 AI 自动回复 · 本地仿真验证台</title>
+<script src="../defaults.js"></script>
+<style>
+  body { margin:0; background:#000; color:#e7e9ea; font:14px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif; }
+/* 给评论区留出足够的滚动空间：真实 X 的时间线随时能继续滚，
+   没有这段 padding 的话页面一屏就滚完了，测不出懒加载 */
+#replies { padding-bottom: 70vh; }
+  .app { max-width:600px; margin:0 auto; border-left:1px solid #2f3336; border-right:1px solid #2f3336; min-height:100vh; }
+  .top { padding:14px 16px; border-bottom:1px solid #2f3336; font-weight:700; position:sticky; top:0; background:rgba(0,0,0,.85); backdrop-filter:blur(8px); z-index:5; }
+  .top small { font-weight:400; opacity:.55; margin-left:8px; }
+  article { display:block; padding:12px 16px; border-bottom:1px solid #2f3336; }
+  .head { display:flex; gap:8px; align-items:center; margin-bottom:6px; }
+  .av { width:38px; height:38px; border-radius:50%; background:#333; flex:0 0 38px; }
+  .name { font-weight:700; }
+  .handle { color:#71767b; font-weight:400; }
+  .body { margin:0 0 8px; white-space:pre-wrap; }
+  .bar { display:flex; gap:70px; }
+  button.r { background:none; border:0; color:#71767b; cursor:pointer; font-size:12px; display:flex; align-items:center; gap:5px; }
+  button.r:hover { color:#1d9bf0; }
+  time { color:#71767b; font-size:12px; }
+  a { color:inherit; text-decoration:none; }
+  #dialog-host { position:fixed; inset:0; display:none; background:rgba(91,112,131,.4); z-index:1000; align-items:flex-start; justify-content:center; padding-top:6vh; }
+  #dialog-host.open { display:flex; }
+  div[role="dialog"] { width:600px; background:#000; border:1px solid #2f3336; border-radius:16px; padding:16px; }
+  .dlg-top { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .dlg-top .sp { flex:1; }
+  .close { background:none; border:0; color:#e7e9ea; font-size:20px; cursor:pointer; }
+  .editor-shell { width:100%; flex:1; }
+  .editor { min-height:70px; width:100%; flex:1; outline:none; padding:10px 0; font-size:15px; }
+  .dlg-bot { display:flex; justify-content:flex-end; border-top:1px solid #2f3336; padding-top:10px; }
+  #tweetButton { background:#1d9bf0; color:#fff; border:0; border-radius:999px; padding:8px 18px; font-weight:700; cursor:pointer; }
+  #tweetButton[aria-disabled="true"] { opacity:.5; }
+  .logbox { position:fixed; left:12px; bottom:12px; width:360px; max-height:240px; overflow:auto; background:#0a0d10; border:1px solid #2f3336; border-radius:10px; padding:8px; font:11px/1.5 ui-monospace,Consolas,monospace; color:#9aa4ae; white-space:pre-wrap; z-index:2000; }
+  .note { padding:12px 16px; background:#11161b; color:#ffd400; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">推文详情 <small>本地仿真页面（不是真实 X）</small></div>
+  <div class="note">
+    这个页面用假的 chrome.storage / chrome.runtime 和仿 X 的 DOM 结构跑一遍真实 content.js。
+    点右下角面板的「开始」，观察它抓评论 → 生成 → 填入弹窗 → 点发送的完整链路。
+  </div>
+  <main id="main">
+    <!-- 主推文：故意不带 status 链接，内容脚本会跳过它 -->
+    <article data-testid="tweet">
+      <div class="head"><div class="av"></div>
+        <div data-testid="User-Name"><span class="name">原推作者</span> <span class="handle">@author</span></div>
+      </div>
+      <div class="body" data-testid="tweetText">终于把用了三年的机械键盘换成了静音红轴。同事说办公室从此安静了，但我觉得手感差一截。</div>
+      <div class="bar"><button class="r" data-testid="reply">💬 128</button><button class="r" data-testid="like">♡ 99</button></div>
+    </article>
+    <div id="replies"></div>
+  </main>
+</div>
+
+<div id="dialog-host">
+  <div role="dialog">
+    <div class="dlg-top">
+      <button class="close" data-testid="app-bar-close">✕</button>
+      <span class="sp"></span>
+    </div>
+    <div class="dlg-bot" style="border:0;padding:0 0 8px;justify-content:flex-start">
+      <!-- 真实 X 是「外壳 div[data-testid] 里套一个 contenteditable」，外壳自己不吃输入。
+           以前 mock 把两者合成一个元素，所以「注入全失败」这种问题在这里死活测不出来。 -->
+      <div class="editor-shell" data-testid="tweetTextarea_0">
+        <div class="editor" contenteditable="true" role="textbox" aria-label="Post your reply"></div>
+      </div>
+    </div>
+    <div class="dlg-bot"><button id="tweetButton" data-testid="tweetButton" aria-disabled="true">回复</button></div>
+  </div>
+</div>
+
+<div class="logbox" id="mocklog"></div>
+
+<script>
+/* ---------------- 仿真 X 的评论区 ---------------- */
+const COMMENTS = [
+  { id: '9001', handle: 'alice_cn', name: 'Alice', text: '静音红轴打字声音是小了，但段落感真的没了，写代码找节奏都难受。', img: 'https://pbs.twimg.com/media/MockPhotoAAA?format=jpg&name=small' },
+  { id: '9002', handle: 'bob_dev', name: 'Bob', text: 'Honestly I switched to silent switches too and my wrists feel better, but I miss the click.', img: 'https://pbs.twimg.com/media/MockPhotoBBB?format=jpg&name=small' },
+  { id: '9003', handle: 'carol_x', name: 'Carol', text: '同事谢谢你。真的。' },
+  { id: '9004', handle: 'dan_tech', name: 'Dan', text: '试过静音红轴一周就换回去了，回弹太软，连续码字手指会累。' }
+];
+
+let seed = 0;
+function makeArticle(c) {
+  const el = document.createElement('article');
+  el.setAttribute('data-testid', 'tweet');
+  el.innerHTML = `
+    <div class="head"><div class="av"></div>
+      <div data-testid="User-Name"><a href="/${c.handle}"><span class="name">${c.name}</span> <span class="handle">@${c.handle}</span></a></div>
+    </div>
+    <div class="body" data-testid="tweetText"></div>
+    ${c.img ? `<div data-testid="tweetPhoto"><img src="${c.img}" alt="photo" style="width:220px;border-radius:12px;display:block"></div>` : ''}
+    <div class="bar">
+      <button class="r" data-testid="reply">💬 Reply</button>
+      <button class="r" data-testid="like">♡ Like</button>
+      <a href="/${c.handle}/status/${c.id}"><time>${1 + seed++}h</time></a>
+    </div>`;
+  el.querySelector('[data-testid="tweetText"]').textContent = c.text;
+  return el;
+}
+
+const replies = document.getElementById('replies');
+COMMENTS.forEach((c, i) => {
+  const a = makeArticle(c);
+  if (i === 3) a.style.display = 'none'; // 模拟需要滚动才加载
+  replies.appendChild(a);
+});
+
+/* 滚动到底部时“加载”最后一条 */
+window.addEventListener('scroll', () => {
+  if (window.scrollY + window.innerHeight > document.body.scrollHeight - 60) {
+    const hidden = replies.querySelector('article[style*="display: none"]');
+    if (hidden) { hidden.style.display = ''; mockLog('（模拟）评论区滚动加载了新回复'); }
+  }
+}, { passive: true });
+
+/* ---------------- 仿真回复弹窗 ---------------- */
+const host = document.getElementById('dialog-host');
+const dlg = host.querySelector('div[role="dialog"]');
+const editorShell = dlg.querySelector('[data-testid="tweetTextarea_0"]');
+const editor = editorShell.querySelector('[contenteditable="true"]');
+const sendBtn = dlg.querySelector('#tweetButton');
+
+let pendingTarget = null;
+let sentCount = 0;
+let sentTexts = [];
+let growHits = 0;
+let likedCount = 0;
+
+document.addEventListener('click', (e) => {
+  const rb = e.target.closest('button[data-testid="reply"]');
+  if (rb) {
+    pendingTarget = rb.closest('article');
+    editor.innerHTML = '';
+    sendBtn.setAttribute('aria-disabled', 'true');
+    host.classList.add('open');
+    setTimeout(() => editor.focus(), 30);
+    mockLog('（仿真）回复弹窗已打开');
+  }
+
+  // 仿真点赞：like <-> unlike 互换，跟真站一样换 testid
+  const lb = e.target.closest('button[data-testid="like"], button[data-testid="unlike"]');
+  if (lb) {
+    const on = lb.getAttribute('data-testid') === 'unlike';
+    lb.setAttribute('data-testid', on ? 'like' : 'unlike');
+    lb.textContent = on ? '♡ Like' : '♥ Liked';
+    lb.classList.toggle('liked', !on);
+    likedCount += on ? -1 : 1;
+    mockLog(`（仿真）${on ? '取消赞' : '点赞'}，当前已赞 ${likedCount} 条`);
+  }
+
+  if (e.target.closest('[data-testid="app-bar-close"]')) {
+    host.classList.remove('open');
+  }
+});
+
+editor.addEventListener('input', () => {
+  // 模拟 X 的真实毛病：每次输入后 React 重排把内容又渲染了几遍
+  if (window.__MOCK_GROW__ === true && growHits < 6) {
+    const cur = editor.textContent || '';
+    if (cur && cur.length < 4000) {
+      growHits++;
+      editor.textContent = cur.repeat(3);
+      mockLog(`（仿真）编辑器把内容放大了 3 倍 → ${editor.textContent.length} 字`);
+    }
+  }
+  const t = (editor.innerText || '').trim();
+  // __MOCK_STALE_BTN__：模拟「框里有字，但 X 的状态没同步，按钮一直灰」
+  if (window.__MOCK_STALE_BTN__ !== true) {
+    sendBtn.setAttribute('aria-disabled', t.length ? 'false' : 'true');
+  }
+});
+
+/* 模拟真实回车发送：X 网页版回复框是 Enter 发送、Shift+Enter 换行。
+   按钮灰的时候插件会派发真实 Enter 键，走的就是这条路径。 */
+editor.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  e.preventDefault();
+  const text = (editor.innerText || '').trim();
+  if (!text) return;
+  sentCount++;
+  sentTexts.push(text);
+  mockLog(`✅ 已发送（Enter）#${sentCount}: ${text}`);
+  host.classList.remove('open');
+  editor.innerHTML = '';
+  if (pendingTarget) {
+    let mark = pendingTarget.querySelector('.sent-mark');
+    if (!mark) {
+      mark = document.createElement('div');
+      mark.className = 'sent-mark';
+      mark.style.cssText = 'font-size:11px;color:#00ba7c;margin-top:4px';
+      pendingTarget.appendChild(mark);
+    }
+    mark.textContent = '↳ 你：' + text;
+  }
+});
+
+/* 模拟 DraftJS 的粘贴处理：程序化派发的 paste 事件也能落字 */
+editor.addEventListener('paste', (e) => {
+  e.preventDefault();
+  const t = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+  if (!t) return;
+  editor.textContent = (editor.textContent || '') + t;
+  editor.dispatchEvent(new Event('input', { bubbles: true }));
+  mockLog('（仿真）编辑器收到 paste 事件');
+});
+
+sendBtn.addEventListener('click', () => {
+  if (sendBtn.getAttribute('aria-disabled') === 'true') return;
+  const text = (editor.innerText || '').trim();
+  sentCount++;
+  sentTexts.push(text);
+  mockLog(`✅ 已发送 #${sentCount}: ${text}`);
+  host.classList.remove('open');
+  editor.innerHTML = '';
+  // 给这条推文打上“已回复”标记，模拟 X 的渲染
+  if (pendingTarget) {
+    let mark = pendingTarget.querySelector('.sent-mark');
+    if (!mark) {
+      mark = document.createElement('div');
+      mark.className = 'sent-mark';
+      mark.style.cssText = 'font-size:11px;color:#00ba7c;margin-top:4px';
+      pendingTarget.appendChild(mark);
+    }
+    mark.textContent = '↳ 你：' + text;
+  }
+});
+
+/* ---------------- 仿真 chrome.* API ---------------- */
+const mockLog = (m) => {
+  const box = document.getElementById('mocklog');
+  box.textContent += `[${new Date().toTimeString().slice(0,8)}] ${m}\n`;
+  box.scrollTop = box.scrollHeight;
+};
+
+const store = {
+  cfg: Object.assign({}, window.XAR_DEFAULTS, {
+    apiKey: 'mock-key-not-used',
+    model: 'mock-model',
+    minDelay: 1,
+    maxDelay: 2,
+    maxPerHour: 50,
+    maxPerRun: 10,
+    visionEnabled: true,
+    autoLike: true,
+    likeMain: false,
+    maxLikes: 5,
+    autoFollow: true,
+    maxFollows: 10,
+    followCooldownMin: 15
+  }),
+  repliedIds: [],
+  followedHandles: []
+};
+
+/* ---------------- 仿 hover card（关注按钮在这里） ---------------- */
+const followedHandles = new Set();
+let followClicks = 0;
+let limitToastAt = 0;
+
+const hoverCard = document.createElement('div');
+hoverCard.setAttribute('data-testid', 'HoverCard');
+hoverCard.style.cssText = 'display:none;position:fixed;z-index:99998;top:38%;left:46%;background:#0b0b0b;color:#e7e9ea;border:1px solid #333;border-radius:14px;padding:12px 14px;font:13px/1.6 system-ui;min-width:200px';
+document.body.appendChild(hoverCard);
+
+const toastEl = document.createElement('div');
+toastEl.setAttribute('data-testid', 'toast');
+toastEl.style.cssText = 'display:none;position:fixed;z-index:99999;bottom:30px;left:50%;transform:translateX(-50%);background:#1d9bf0;color:#fff;padding:10px 18px;border-radius:6px;font:13px system-ui';
+document.body.appendChild(toastEl);
+
+function showToast(text) {
+  toastEl.textContent = text;
+  toastEl.style.display = 'block';
+  limitToastAt = Date.now();
+  setTimeout(() => { toastEl.style.display = 'none'; }, 4000);
+}
+
+function renderHoverCard(handle) {
+  hoverCard.innerHTML = '';
+  const n = document.createElement('div');
+  n.textContent = '@' + handle;
+  n.style.cssText = 'font-weight:700;margin-bottom:8px';
+  hoverCard.appendChild(n);
+  const b = document.createElement('button');
+  b.textContent = followedHandles.has(handle) ? 'Following' : 'Follow';
+  b.style.cssText = 'padding:5px 14px;border-radius:999px;border:1px solid #536471;background:#eff3f4;color:#0f1419;font-weight:700;cursor:pointer';
+  b.addEventListener('click', () => {
+    followClicks++;
+    // 模拟 X 的关注限流：第 3 次开始弹限制提示；也可用 __MOCK_LIMIT__ 强制开启
+    if (window.__MOCK_LIMIT__ === true || followClicks >= 3) {
+      showToast('You are unable to follow more people at this time.');
+      mockLog('（仿真）关注被限制');
+      return;
+    }
+    followedHandles.add(handle);
+    store.followedHandles = Array.from(followedHandles);
+    b.textContent = 'Following';
+    mockLog(`（仿真）已关注 @${handle}`);
+  });
+  hoverCard.appendChild(b);
+  hoverCard.style.display = 'block';
+}
+
+/* 悬停用户链接 → 弹名片 */
+document.addEventListener('mouseover', (e) => {
+  const a = e.target.closest && e.target.closest('div[data-testid="User-Name"] a[href^="/"]');
+  if (!a) return;
+  const handle = a.getAttribute('href').replace(/^\//, '');
+  renderHoverCard(handle);
+}, true);
+
+document.addEventListener('mousedown', () => { hoverCard.style.display = 'none'; });
+hoverCard.addEventListener('mouseout', () => { hoverCard.style.display = 'none'; });
+
+window.__MOCK = {
+  get liked() { return likedCount; },
+  get sent() { return sentCount; },
+  get sentTexts() { return sentTexts.slice(); },
+  get followed() { return followedHandles.size; },
+  get followLimitToast() { return toastEl.style.display !== 'none' && /unable to follow/i.test(toastEl.textContent); }
+};
+
+const storeListeners = [];
+window.chrome = {
+  storage: {
+    local: {
+      get: async (keys) => {
+        const out = {};
+        const arr = Array.isArray(keys) ? keys : (typeof keys === 'string' ? [keys] : Object.keys(keys || {}));
+        for (const k of arr) if (store[k] !== undefined) out[k] = JSON.parse(JSON.stringify(store[k]));
+        return out;
+      },
+      set: async (obj) => {
+        const changes = {};
+        for (const k of Object.keys(obj)) {
+          changes[k] = { oldValue: store[k], newValue: JSON.parse(JSON.stringify(obj[k])) };
+        }
+        Object.assign(store, JSON.parse(JSON.stringify(obj)));
+        storeListeners.forEach(fn => { try { fn(changes, 'local'); } catch (_) {} });
+        return;
+      }
+    },
+    onChanged: { addListener: (fn) => { storeListeners.push(fn); } }
+  },
+  runtime: {
+    id: 'mock-extension-id',
+    getManifest: () => ({ version: '1.16.0-mock' }),
+    sendMessage: async (msg) => {
+      if (msg.type === 'XAR_GENERATE') {
+        const p = msg.payload || {};
+        const mt = (p.mainTweet || '').trim();
+        const cm = (p.comment || '').trim();
+        const imgs = Array.isArray(p.images) ? p.images : [];
+        // 这里刻意把上下文情况打出来，方便验证「原推文与评论重复」时有没有被去掉
+        mockLog(`（仿真）payload: 上文${mt.length}字 / 评论${cm.length}字 / 图${imgs.length}张` +
+          (mt && cm && mt === cm ? ' ⚠ 上文与评论完全相同' : '') +
+          (imgs.length ? ` → ${imgs[0]}` : ''));
+        await new Promise(r => setTimeout(r, 260)); // 模拟网络延迟
+        const t = p.comment;
+        const zh = [
+          '段落感确实是个取舍，我现在靠换键帽把手感找回来了一点。',
+          '这个点很实在，不过我打字轻，软一点反而没那么累。',
+          '你是连续码多久会觉得累？我大概两小时就开始有感觉了。'
+        ];
+        const en = [
+          'Appreciate the honest take — silent switches are a compromise, not an upgrade.'
+        ];
+        const hasZh = /[\u4e00-\u9fff]/.test(p.comment || '');
+        let pool;
+        if (p.forceLang === '英文') pool = en;
+        else if (p.forceLang === '中文') pool = zh;
+        // __MOCK_LANG__='bad' 时第一次故意反着语言回，用来验证质检会自动重生成
+        else if (window.__MOCK_LANG__ === 'bad') pool = hasZh ? en : zh;
+        // 没指定语言时按 20% 概率故意返回英文，模拟真实的偶发跑偏
+        else pool = (window.__MOCK_LANG__ !== 'zh' && Math.random() < 0.2) ? en : zh;
+        const pick = pool[Math.floor(Math.random() * pool.length)];
+        mockLog(`（仿真）模型返回${p.forceLang ? `［强制${p.forceLang}］` : ''}：${pick}`);
+        return { ok: true, data: pick };
+      }
+      if (msg.type === 'XAR_INSERT') {
+        // 默认不实现 —— 这样测试能覆盖「CDP 失败 → 降级到粘贴/分块」那条路。
+        // 把 __MOCK_CDP__ 打开就是仿真的真实 CDP：一次插入整段。
+        if (window.__MOCK_CDP__ === true) {
+          const cur = editor.textContent || '';
+          editor.textContent = cur + (msg.text || '');
+          editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: msg.text }));
+          mockLog(`（仿真）CDP 一次插入 ${(msg.text || '').length} 字`);
+          return { ok: true, data: 'inserted' };
+        }
+        return { ok: true, data: null };
+      }
+      if (msg.type === 'XAR_WHEEL') {
+        /* 仿真真实滚轮。默认打开（对应真实浏览器里 CDP 可用的情况），
+           把 __MOCK_WHEEL__ 设成 false 可以测「滚轮通道不通」的退路。 */
+        if (window.__MOCK_WHEEL__ !== false) {
+          const dy = Number(msg.deltaY) || 0;
+          const before = window.scrollY;
+          window.scrollBy(0, dy);
+          window.__MOCK_WHEELS__ = (window.__MOCK_WHEELS__ || 0) + 1;
+          window.__MOCK_WHEEL_DY__ = (window.__MOCK_WHEEL_DY__ || 0) + dy;
+          mockLog(`（仿真）真实滚轮 ${dy}px：${Math.round(before)} → ${Math.round(window.scrollY)}`);
+          // 滚到接近底部时补一条，模拟 X 的懒加载
+          const hidden = replies.querySelector('article[style*="display: none"]');
+          if (hidden && window.scrollY + window.innerHeight > document.body.scrollHeight - 160) {
+            hidden.style.display = '';
+            mockLog('（仿真）滚轮触发了懒加载，多出一条评论');
+          }
+          return { ok: true, data: 'wheeled' };
+        }
+        return { ok: false, error: 'mock: wheel disabled' };
+      }
+      if (msg.type === 'XAR_KEY') {
+        // 模拟 CDP 的原始按键：直接落到当前焦点元素上
+        const el = document.activeElement || editor;
+        const k = msg.key || 'Enter';
+        if (k === 'CtrlA') {
+          // 全选：把光标覆盖整个编辑器（不真的清空，等 Backspace 来删）
+          try {
+            const r = document.createRange();
+            r.selectNodeContents(el);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(r);
+          } catch (_) {}
+          mockLog('（仿真）收到真实按键 Ctrl+A');
+          return { ok: true, data: 'pressed' };
+        }
+        if (k === 'Backspace') {
+          // 有选区就删选区，否则删最后一个字
+          const sel = window.getSelection();
+          if (sel && sel.rangeCount && !sel.isCollapsed) {
+            el.textContent = '';
+            sel.removeAllRanges();
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+          } else {
+            el.textContent = (el.textContent || '').slice(0, -1);
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+          }
+          mockLog('（仿真）收到真实按键 Backspace');
+          return { ok: true, data: 'pressed' };
+        }
+        const ev = new KeyboardEvent('keydown', {
+          key: k, code: k,
+          keyCode: k === 'Escape' ? 27 : 13, which: k === 'Escape' ? 27 : 13,
+          bubbles: true, cancelable: true
+        });
+        el.dispatchEvent(ev);
+        mockLog(`（仿真）收到真实按键 ${k}`);
+        return { ok: true, data: 'pressed' };
+      }
+      return { ok: true, data: null };
+    }
+  }
+};
+</script>
+<script src="../content.js"></script>
+<script>mockLog('仿真环境已就绪，点右下角「开始」');</script>
+</body>
+</html>

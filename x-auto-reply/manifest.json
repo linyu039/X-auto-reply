@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "X 评论 AI 自动回复",
+  "version": "1.16.0",
+  "description": "点开 X（Twitter）任意一条评论的回复框，大模型自动代写，可识别推文配图，填好就停住等你发。",
+  "permissions": ["storage", "scripting", "debugger"],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["defaults.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "X 评论 AI 自动回复"
+  }
+}
