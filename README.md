@@ -6,7 +6,7 @@
 
 1. Chrome 打开 `chrome://extensions/`
 2. 右上角打开「开发者模式」
-3. 点「加载已解压的扩展程序」，选中本目录 `E:\work deepseek\x-auto-reply`
+3. 点「加载已解压的扩展程序」，选中本目录 
 4. 建议把扩展图标固定到工具栏
 
 ## 配置
@@ -721,7 +721,7 @@ X 的 DOM 结构变了。打开 DevTools 看回复框现在的 `data-testid`，�
 **模型报 400**
 部分服务商不接受 `temperature` / `max_tokens`，`background.js` 里已经做了一次降级重试；仍然失败就检查模型名是否拼错。
 > [!WARNING]
-> **使用前请先读 [DISCLAIMER.md](DISCLAIMER.md)。**
+> **使用前请先读 [DISCLAIMER.md]。**
 >
 > 本项目为第三方个人项目，与 X Corp.、xAI、DeepSeek 及任何学校/考试平台**均无关联**。
 >
